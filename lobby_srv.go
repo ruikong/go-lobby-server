@@ -44,7 +44,8 @@ type ApiWapper struct {
 }
 
 func main() {
-	startTcpServer("localhost", 8090)
+	startTcpServer("localhost", 8088)
+	startHttpServer("localhost", 8099)
 }
 
 func startTcpServer(ip string, port int){
@@ -64,6 +65,7 @@ func startTcpServer(ip string, port int){
 func startHttpServer(ip string, port int) {
 	http.HandleFunc("/servers", handleFetchAvailableServer)
 	http.ListenAndServe(fmt.Sprintf("%s:%d", ip, port), nil)
+	fmt.Print("http server listen")
 }
 
 func handleConnection(conn net.Conn) {

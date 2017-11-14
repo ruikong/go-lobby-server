@@ -18,22 +18,22 @@ type Server struct {
 }
 
 func (this *Server)Deserialize(buff []byte){
-	bi := bytes.NewBuffer(buff)
-	err := binary.Read(bi, binary.LittleEndian, &(this.load))
+	pBuffer := bytes.NewBuffer(buff)
+	err := binary.Read(pBuffer, binary.LittleEndian, &(this.load))
 	CheckError(err)
-	err = binary.Read(bi, binary.LittleEndian, &(this.port))
+	err = binary.Read(pBuffer, binary.LittleEndian, &(this.port))
 	CheckError(err)
-	this.ip = bi.Bytes()
+	this.ip = pBuffer.Bytes()
 	CheckError(err)
 }
 
-func (this *Server)Serialize(buff []byte){
-	bi := bytes.NewBuffer(bytes.Buffer)
-	err := binary.Read(bi, binary.LittleEndian, &(this.load))
+func (this *Server)Serialize() {
+	buffer := new(bytes.Buffer) 
+    err := binary.Write(buffer, binary.LittleEndian, this.load)  
 	CheckError(err)
-	err = binary.Read(bi, binary.LittleEndian, &(this.port))
+    err = binary.Write(buffer, binary.LittleEndian, this.port)  
 	CheckError(err)
-	this.ip = bi.Bytes()
+	err = binary.Write(buffer, binary.LittleEndian, this.ip)
 	CheckError(err)
 }
 
@@ -61,9 +61,9 @@ func startTcpServer(ip string, port int){
 	}
 }
 
-func startHttpServer() {
+func startHttpServer(ip string, port int) {
 	http.HandleFunc("/servers", handleFetchAvailableServer)
-	http.ListenAndServe(":8001", nil)
+	http.ListenAndServe(fmt.Sprintf("%s:%d", ip, port), nil)
 }
 
 func handleConnection(conn net.Conn) {
@@ -84,7 +84,9 @@ func handleConnection(conn net.Conn) {
 func handleTcpMessage(buffer []byte, length int) {
 	pack := &Packet{}
 	pack.Decode(buffer)
-
+	server := &Server{}
+	server.Deserialize(pack.data)
+	fmt.Printf("receive msg [ip:%s port:%d load:%d]", server.ip, server.port, server.load)
 }
 
 func handleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
@@ -94,8 +96,6 @@ func handleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
 	w.Write(jsonbyte)
 }
 
-
 func CheckError(err error) {
-	
-	
+	fmt.Print(err)
 }

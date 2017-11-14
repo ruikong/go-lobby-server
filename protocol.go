@@ -8,18 +8,18 @@ import (
 )
 
 type Packet struct {  
-    length uint32  
+    length uint32
     crc32  uint32
-    info   string
+    data   []byte
 }
 
 func (p Packet) Encode() []byte {  
     buf2 := new(bytes.Buffer)  
-    var length int = len([]byte(p.info))  
+    var length int = len(p.data)
     err := binary.Write(buf2, binary.LittleEndian, (int32)(length))  
     CheckError(err)  
   
-    err = binary.Write(buf2, binary.LittleEndian, []byte(p.info))  
+    err = binary.Write(buf2, binary.LittleEndian, p.data)  
     CheckError(err)  
   
     buf := new(bytes.Buffer)  
@@ -48,8 +48,7 @@ func (p *Packet) Decode(buff []byte) {
     buf2 := bytes.NewBuffer(buff[8:])
     crc := crc32.ChecksumIEEE(buf2.Bytes())
     if crc != p.crc32 {
-        fmt.Errorf(" crc not check")  
+        fmt.Errorf(" crc not check")
     }
-    p.info = (string)(buf2.Bytes())
-    fmt.Printf("%s", p.info)
+    p.data = buf2.Bytes()
 }  

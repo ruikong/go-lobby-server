@@ -7,65 +7,172 @@ import (
 	"encoding/json"
 	"encoding/binary"
 	"bytes"
+	"sync"
+	"time"
 )
 
-var serverMap = make(map[string]*Server)
+func NewMap() *SafeMap {
+    sm := new(SafeMap)
+    sm.Map = make(map[string]*Server)
+    return sm
+}
+
+type SafeMap struct {
+    sync.RWMutex
+    Map map[string]*Server
+}
+
+func (sm *SafeMap) readMap(key string) (*Server, bool){
+    sm.RLock()
+    value, exist := sm.Map[key]
+    sm.RUnlock()
+    return value, exist
+}
+
+func (sm *SafeMap) writeMap(key string, value *Server) {
+    sm.Lock()
+    sm.Map[key] = value
+    sm.Unlock()
+}
+
+func (sm *SafeMap) count() int {
+	count := 0
+    sm.RLock()
+	count = len(sm.Map)
+	sm.RUnlock()
+	return count
+}
+
+func (sm *SafeMap) Remove(key string) {
+	sm.Lock()
+    delete(sm.Map, key)
+    sm.Unlock()
+}
+
+func (sm *SafeMap) ChooseServer() (*Server) {
+	var srv *Server = nil
+	if serverMap.count() == 0 {
+		return nil
+	}
+	var load, i int32 = 0, 0
+	sm.RLock()
+    for _, s := range sm.Map {
+		if i==0 {
+			srv = s
+			load = s.Load
+		} else {
+			if s.Load < load {
+				srv = s
+				load = s.Load
+			}
+		}
+		i++
+	}
+	sm.RUnlock()
+	return srv
+}
+
+func (sm *SafeMap) CheckServer() {
+	sm.RLock()
+	now := time.Now().Unix()
+	arr := make([]string, 1)
+    for k, s := range sm.Map {
+		if s.Time > (now + 60) {
+			arr = append(arr, k)
+		}
+	}
+	sm.RUnlock()
+
+	for _, key := range arr {
+		sm.Remove(key)
+		fmt.Printf("删除服务列表:%s \n", key)
+	}
+}
+
+var serverMap = NewMap()
 
 type Server struct {
-	load int32
-	port int32
-	ip []byte
+	Time int64
+	Load int32
+	Port int32
+	Ip string
 }
 
 func (this *Server)Deserialize(buff []byte){
 	pBuffer := bytes.NewBuffer(buff)
-	err := binary.Read(pBuffer, binary.LittleEndian, &(this.load))
+	err := binary.Read(pBuffer, binary.LittleEndian, &(this.Time))
 	CheckError(err)
-	err = binary.Read(pBuffer, binary.LittleEndian, &(this.port))
+	err = binary.Read(pBuffer, binary.LittleEndian, &(this.Load))
 	CheckError(err)
-	this.ip = pBuffer.Bytes()
+	err = binary.Read(pBuffer, binary.LittleEndian, &(this.Port))
+	CheckError(err)
+	this.Ip = string(pBuffer.Bytes())
 	CheckError(err)
 }
 
 func (this *Server)Serialize() {
 	buffer := new(bytes.Buffer) 
-    err := binary.Write(buffer, binary.LittleEndian, this.load)  
+	err := binary.Write(buffer, binary.LittleEndian, this.Time)
 	CheckError(err)
-    err = binary.Write(buffer, binary.LittleEndian, this.port)  
+    err = binary.Write(buffer, binary.LittleEndian, this.Load)  
 	CheckError(err)
-	err = binary.Write(buffer, binary.LittleEndian, this.ip)
+    err = binary.Write(buffer, binary.LittleEndian, this.Port)  
+	CheckError(err)
+	err = binary.Write(buffer, binary.LittleEndian, this.Ip)
 	CheckError(err)
 }
 
 type ApiWapper struct {
-	code int
-	msg string
-	data interface{}
+	Code int
+	Msg string
+	Data interface{}
 }
 
 func main() {
-	startTcpServer("localhost", 8088)
-	startHttpServer("localhost", 8099)
+	go StartHttpServer("localhost", 8099)
+	go StartTcpServer("localhost", 8088)
+
+	StartTimerCheck()
 }
 
-func startTcpServer(ip string, port int){
-	netListen, err := net.Listen("tcp", fmt.Sprintf("%s:%d", ip, port))
+func StartTimerCheck() {
+	timer1 := time.NewTicker(5 * time.Second)
+	for {
+		select {
+		case <-timer1.C:
+			CheckServerRunning()
+		}
+	}
+}
+
+func CheckServerRunning() {
+	fmt.Printf("定时器检查服务列表\n")
+	serverMap.CheckServer()
+}
+
+func StartTcpServer(ip string, port int){
+	url := fmt.Sprintf("%s:%d", ip, port)
+	netListen, err := net.Listen("tcp", url)
 	CheckError( err )
 	defer netListen.Close()
-	fmt.Print("Waiting for clients")
+
+	fmt.Printf("服务监听成功 %s\n",url)
+
 	for {
 		conn, err := netListen.Accept()
 		if err != nil  {
 			continue
 		}
-		fmt.Print(conn.RemoteAddr().String(), " tcp connect success")
+		fmt.Print(conn.RemoteAddr().String(), " 客户端连接成功 \n")
 	}
 }
 
-func startHttpServer(ip string, port int) {
-	http.HandleFunc("/servers", handleFetchAvailableServer)
-	http.ListenAndServe(fmt.Sprintf("%s:%d", ip, port), nil)
+func StartHttpServer(ip string, port int) {
 	fmt.Print("http server listen")
+	http.HandleFunc("/servers", HandleFetchAvailableServer)
+	http.HandleFunc("/datas", HandleFetchData)
+	
+	http.ListenAndServe(fmt.Sprintf("%s:%d", ip, port), nil)
 }
 
 func handleConnection(conn net.Conn) {
@@ -77,27 +184,48 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 
-		fmt.Printf(conn.RemoteAddr().String(), "receive data string :\n", string(buffer[:n]))
+		fmt.Printf(conn.RemoteAddr().String(), " 收到客户端消息 \n")
 
-		handleTcpMessage(buffer[:n], n)
+		HandleTcpMessage(buffer[:n], n)
 	}
 }
 
-func handleTcpMessage(buffer []byte, length int) {
+func HandleTcpMessage(buffer []byte, length int) {
 	pack := &Packet{}
 	pack.Decode(buffer)
-	server := &Server{}
-	server.Deserialize(pack.data)
-	fmt.Printf("receive msg [ip:%s port:%d load:%d]", server.ip, server.port, server.load)
+	srv := &Server{}
+	srv.Deserialize(pack.data)
+	key := fmt.Sprintf("%s:%d",srv.Ip, srv.Port)
+	oldSrv, exist := serverMap.readMap(key)
+	if exist {
+		oldSrv.Load = srv.Load
+	} else {
+		serverMap.writeMap(key, srv)
+	}
+
+	fmt.Printf("收到客户端消息 [time:%d, ip:%s port:%d load:%d]", srv.Time, srv.Ip, srv.Port, srv.Load)
 }
 
-func handleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
+func HandleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
 	api := &ApiWapper{0,"success",nil}
+	srv := serverMap.ChooseServer()
+	if srv == nil {
+		api.Code = 1
+		api.Msg = "faild"
+	} else {
+		api.Data = srv
+	}
 	jsonbyte, err := json.Marshal(api)
 	CheckError(err)
 	w.Write(jsonbyte)
 }
 
+func HandleFetchData(w http.ResponseWriter, req *http.Request){
+	w.Write([]byte("{\"code\":0}"))
+}
+
 func CheckError(err error) {
-	fmt.Print(err)
+	if err != nil {
+		fmt.Print(err)
+	}
 }

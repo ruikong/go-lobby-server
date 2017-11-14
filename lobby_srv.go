@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"sync"
 	"time"
+	"strings"
+	"strconv"
 )
 
 func NewMap() *SafeMap {
@@ -100,9 +102,7 @@ type Server struct {
 
 func (this *Server)Deserialize(buff []byte){
 	pBuffer := bytes.NewBuffer(buff)
-	err := binary.Read(pBuffer, binary.LittleEndian, &(this.Time))
-	CheckError(err)
-	err = binary.Read(pBuffer, binary.LittleEndian, &(this.Load))
+	err := binary.Read(pBuffer, binary.LittleEndian, &(this.Load))
 	CheckError(err)
 	err = binary.Read(pBuffer, binary.LittleEndian, &(this.Port))
 	CheckError(err)
@@ -112,9 +112,7 @@ func (this *Server)Deserialize(buff []byte){
 
 func (this *Server)Serialize() {
 	buffer := new(bytes.Buffer) 
-	err := binary.Write(buffer, binary.LittleEndian, this.Time)
-	CheckError(err)
-    err = binary.Write(buffer, binary.LittleEndian, this.Load)  
+    err := binary.Write(buffer, binary.LittleEndian, this.Load)  
 	CheckError(err)
     err = binary.Write(buffer, binary.LittleEndian, this.Port)  
 	CheckError(err)
@@ -129,14 +127,14 @@ type ApiWapper struct {
 }
 
 func main() {
-	go StartHttpServer("localhost", 8099)
-	go StartTcpServer("localhost", 8088)
+	go StartHttpServer("0.0.0.0", 8099)
+	go StartTcpServer("0.0.0.0", 8088)
 
 	StartTimerCheck()
 }
 
 func StartTimerCheck() {
-	timer1 := time.NewTicker(5 * time.Second)
+	timer1 := time.NewTicker(30 * time.Second)
 	for {
 		select {
 		case <-timer1.C:
@@ -168,9 +166,11 @@ func StartTcpServer(ip string, port int){
 }
 
 func StartHttpServer(ip string, port int) {
-	fmt.Print("http server listen")
+	fmt.Printf("Http服务器启动成功:%s:%d\n", ip, port)
 	http.HandleFunc("/servers", HandleFetchAvailableServer)
 	http.HandleFunc("/datas", HandleFetchData)
+	http.HandleFunc("/servers/reg", HandleSrvReg)
+	http.HandleFunc("/server/available", HandleSrvCheck)
 	
 	http.ListenAndServe(fmt.Sprintf("%s:%d", ip, port), nil)
 }
@@ -195,14 +195,20 @@ func HandleTcpMessage(buffer []byte, length int) {
 	pack.Decode(buffer)
 	srv := &Server{}
 	srv.Deserialize(pack.data)
+
+	HandleServer(srv)
+}
+
+func HandleServer(srv *Server) {
 	key := fmt.Sprintf("%s:%d",srv.Ip, srv.Port)
 	oldSrv, exist := serverMap.readMap(key)
 	if exist {
 		oldSrv.Load = srv.Load
+		oldSrv.Time = time.Now().Unix()
 	} else {
+		srv.Time = time.Now().Unix()
 		serverMap.writeMap(key, srv)
 	}
-
 	fmt.Printf("收到客户端消息 [time:%d, ip:%s port:%d load:%d]", srv.Time, srv.Ip, srv.Port, srv.Load)
 }
 
@@ -211,7 +217,7 @@ func HandleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
 	srv := serverMap.ChooseServer()
 	if srv == nil {
 		api.Code = 1
-		api.Msg = "faild"
+		api.Msg = "error"
 	} else {
 		api.Data = srv
 	}
@@ -223,6 +229,77 @@ func HandleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
 func HandleFetchData(w http.ResponseWriter, req *http.Request){
 	w.Write([]byte("{\"code\":0}"))
 }
+
+func HandleSrvReg(w http.ResponseWriter, req *http.Request){
+	var ipStr = req.FormValue("ip")
+	var portStr = req.FormValue("port")
+	var loadStr = req.FormValue("load")
+	api := &ApiWapper{1, "error",nil}
+
+	for {
+		if ipStr=="" || portStr=="" || loadStr=="" {
+			api.Msg = "缺少参数"
+			break
+		}
+		
+		if len( strings.Split(ipStr, ".") ) != 4 {
+			api.Msg = "IP错误"
+			break
+		}
+
+		port, _ := strconv.Atoi(portStr)
+		load, _ := strconv.Atoi(loadStr)
+		srv := &Server{}
+		srv.Ip = ipStr
+		srv.Port = (int32)(port)
+		srv.Load = (int32)(load)
+		
+		HandleServer(srv)
+
+		api.Code = 0
+		api.Msg = "success"
+
+		break
+	}
+
+	jsonbyte, err := json.Marshal(api)
+	CheckError(err)
+	w.Write(jsonbyte)
+}
+
+func HandleSrvCheck(w http.ResponseWriter, req *http.Request){
+	var ipStr = req.FormValue("ip")
+	var portStr = req.FormValue("port")
+	api := &ApiWapper{1, "error",nil}
+	for {
+		if ipStr=="" || portStr=="" {
+			api.Msg = "缺少参数"
+			break
+		}
+		
+		if len( strings.Split(ipStr, ".") ) != 4 {
+			api.Msg = "IP错误"
+			break
+		}
+		key := fmt.Sprintf("%s:%s",ipStr,portStr)
+		srv, isExist := serverMap.readMap(key)
+
+		if !isExist {
+			break
+		}
+
+		api.Code = 0
+		api.Msg = "success"
+		api.Data = srv
+		
+		break
+	}
+
+	jsonbyte, err := json.Marshal(api)
+	CheckError(err)
+	w.Write(jsonbyte)
+}
+
 
 func CheckError(err error) {
 	if err != nil {

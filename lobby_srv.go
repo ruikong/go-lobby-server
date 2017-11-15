@@ -51,7 +51,7 @@ func (sm *SafeMap) Remove(key string) {
     sm.Unlock()
 }
 
-func (sm *SafeMap) ChooseServer() (*Server) {
+func (sm *SafeMap) ChooseServer(gameid int32) (*Server) {
 	var srv *Server = nil
 	if serverMap.count() == 0 {
 		return nil
@@ -59,11 +59,11 @@ func (sm *SafeMap) ChooseServer() (*Server) {
 	var load, i int32 = 0, 0
 	sm.RLock()
     for _, s := range sm.Map {
-		if i==0 {
+		if srv==nil && s.GameId==gameid {
 			srv = s
 			load = s.Load
 		} else {
-			if s.Load < load {
+			if s.Load < load && s.GameId==gameid {
 				srv = s
 				load = s.Load
 			}
@@ -94,6 +94,7 @@ func (sm *SafeMap) CheckServer() {
 var serverMap = NewMap()
 
 type Server struct {
+	GameId int32
 	Time int64
 	Load int32
 	Port int32
@@ -102,7 +103,9 @@ type Server struct {
 
 func (this *Server)Deserialize(buff []byte){
 	pBuffer := bytes.NewBuffer(buff)
-	err := binary.Read(pBuffer, binary.LittleEndian, &(this.Load))
+	err := binary.Read(pBuffer, binary.LittleEndian, &(this.GameId))
+	CheckError(err)
+	err = binary.Read(pBuffer, binary.LittleEndian, &(this.Load))
 	CheckError(err)
 	err = binary.Read(pBuffer, binary.LittleEndian, &(this.Port))
 	CheckError(err)
@@ -112,12 +115,18 @@ func (this *Server)Deserialize(buff []byte){
 
 func (this *Server)Serialize() {
 	buffer := new(bytes.Buffer) 
-    err := binary.Write(buffer, binary.LittleEndian, this.Load)  
+	err := binary.Write(buffer, binary.LittleEndian, this.GameId)
+	CheckError(err)
+    err = binary.Write(buffer, binary.LittleEndian, this.Load)  
 	CheckError(err)
     err = binary.Write(buffer, binary.LittleEndian, this.Port)  
 	CheckError(err)
 	err = binary.Write(buffer, binary.LittleEndian, this.Ip)
 	CheckError(err)
+}
+
+func MakeSrvKey(s *Server) string {
+	return fmt.Sprintf("%s:%d:%d", s.Ip, s.Port, s.GameId)
 }
 
 type ApiWapper struct {
@@ -148,7 +157,7 @@ func CheckServerRunning() {
 	serverMap.CheckServer()
 }
 
-func StartTcpServer(ip string, port int){
+func StartTcpServer(ip string, port int) {
 	url := fmt.Sprintf("%s:%d", ip, port)
 	netListen, err := net.Listen("tcp", url)
 	CheckError( err )
@@ -200,44 +209,52 @@ func HandleTcpMessage(buffer []byte, length int) {
 }
 
 func HandleServer(srv *Server) {
-	key := fmt.Sprintf("%s:%d",srv.Ip, srv.Port)
+	key := MakeSrvKey(srv)
 	oldSrv, exist := serverMap.readMap(key)
 	if exist {
 		oldSrv.Load = srv.Load
+		oldSrv.GameId = srv.GameId
 		oldSrv.Time = time.Now().Unix()
 	} else {
 		srv.Time = time.Now().Unix()
 		serverMap.writeMap(key, srv)
 	}
-	fmt.Printf("收到客户端消息 [time:%d, ip:%s port:%d load:%d]", srv.Time, srv.Ip, srv.Port, srv.Load)
+	fmt.Printf("收到客户端消息 [time:%d, ip:%s port:%d gameid:%d load:%d] \n", srv.Time, srv.Ip, srv.Port, srv.GameId, srv.Load)
 }
 
 func HandleFetchAvailableServer(w http.ResponseWriter, req *http.Request) {
-	api := &ApiWapper{0,"success",nil}
-	srv := serverMap.ChooseServer()
-	if srv == nil {
-		api.Code = 1
-		api.Msg = "error"
-	} else {
+	var gameIdStr = req.FormValue("gameid")
+	api := &ApiWapper{1, "error",nil}
+	for {
+		if gameIdStr=="" {
+			api.Msg = "缺少参数"
+			break
+		}
+		gameid, _ := strconv.Atoi(gameIdStr)
+		srv := serverMap.ChooseServer((int32)(gameid))
 		api.Data = srv
+		api.Code = 0
+		api.Msg = "success"
+
+		break
 	}
-	jsonbyte, err := json.Marshal(api)
-	CheckError(err)
-	w.Write(jsonbyte)
+	Responds(api, w)
 }
 
 func HandleFetchData(w http.ResponseWriter, req *http.Request){
-	w.Write([]byte("{\"code\":0}"))
+	api := &ApiWapper{1, "error",nil}
+	Responds(api, w)
 }
 
 func HandleSrvReg(w http.ResponseWriter, req *http.Request){
 	var ipStr = req.FormValue("ip")
 	var portStr = req.FormValue("port")
 	var loadStr = req.FormValue("load")
+	var gameIdStr = req.FormValue("gameid")
 	api := &ApiWapper{1, "error",nil}
 
 	for {
-		if ipStr=="" || portStr=="" || loadStr=="" {
+		if ipStr=="" || portStr=="" || loadStr=="" || gameIdStr=="" {
 			api.Msg = "缺少参数"
 			break
 		}
@@ -249,10 +266,12 @@ func HandleSrvReg(w http.ResponseWriter, req *http.Request){
 
 		port, _ := strconv.Atoi(portStr)
 		load, _ := strconv.Atoi(loadStr)
+		gameid, _ := strconv.Atoi(gameIdStr)
 		srv := &Server{}
 		srv.Ip = ipStr
 		srv.Port = (int32)(port)
 		srv.Load = (int32)(load)
+		srv.GameId = (int32)(gameid)
 		
 		HandleServer(srv)
 
@@ -262,17 +281,16 @@ func HandleSrvReg(w http.ResponseWriter, req *http.Request){
 		break
 	}
 
-	jsonbyte, err := json.Marshal(api)
-	CheckError(err)
-	w.Write(jsonbyte)
+	Responds(api, w)
 }
 
 func HandleSrvCheck(w http.ResponseWriter, req *http.Request){
 	var ipStr = req.FormValue("ip")
 	var portStr = req.FormValue("port")
+	var gameIdStr = req.FormValue("gameid")
 	api := &ApiWapper{1, "error",nil}
 	for {
-		if ipStr=="" || portStr=="" {
+		if ipStr=="" || portStr=="" || gameIdStr=="" {
 			api.Msg = "缺少参数"
 			break
 		}
@@ -281,7 +299,7 @@ func HandleSrvCheck(w http.ResponseWriter, req *http.Request){
 			api.Msg = "IP错误"
 			break
 		}
-		key := fmt.Sprintf("%s:%s",ipStr,portStr)
+		key := fmt.Sprintf("%s:%s:%s",ipStr,portStr,gameIdStr)
 		srv, isExist := serverMap.readMap(key)
 
 		if !isExist {
@@ -295,11 +313,14 @@ func HandleSrvCheck(w http.ResponseWriter, req *http.Request){
 		break
 	}
 
+	Responds(api, w)
+}
+
+func Responds(api *ApiWapper, w http.ResponseWriter) {
 	jsonbyte, err := json.Marshal(api)
 	CheckError(err)
 	w.Write(jsonbyte)
 }
-
 
 func CheckError(err error) {
 	if err != nil {

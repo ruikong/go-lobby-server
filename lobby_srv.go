@@ -77,9 +77,9 @@ func (sm *SafeMap) ChooseServer() (*Server) {
 func (sm *SafeMap) CheckServer() {
 	sm.RLock()
 	now := time.Now().Unix()
-	arr := make([]string, 1)
+	arr := make([]string, 0)
     for k, s := range sm.Map {
-		if s.Time > (now + 60) {
+		if s.Time < now - 60 {
 			arr = append(arr, k)
 		}
 	}
